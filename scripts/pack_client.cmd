@@ -19,11 +19,15 @@ if not exist "%REPO%\setup_build_env.bat" (
   echo [ERROR] Missing setup_build_env.bat
   exit /b 1
 )
+if exist "%SKILL_SCRIPTS%ensure_pack_spec.ps1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SKILL_SCRIPTS%ensure_pack_spec.ps1" "%REPO%"
+)
 set "FOUND_SPEC="
 for %%F in ("%REPO%\*.spec") do set "FOUND_SPEC=1"
 if not defined FOUND_SPEC (
   echo [ERROR] No .spec next to build_and_pack.bat
   echo Need an onedir spec ^(contains COLLECT^), not onefile.
+  echo If git only has fNIRS_Community.spec, copy templates\Golgi_fNIRS_community.spec
   exit /b 1
 )
 if not exist "%CHECK_PS1%" (

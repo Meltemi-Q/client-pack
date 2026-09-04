@@ -23,6 +23,7 @@ $ScriptDir = $PSScriptRoot
 $SkillRoot = Split-Path -Parent $ScriptDir
 $Bootstrap = Join-Path $ScriptDir "bootstrap_pack_tools.ps1"
 $CheckPs1 = Join-Path $ScriptDir "check_pack_env.ps1"
+$EnsureSpec = Join-Path $ScriptDir "ensure_pack_spec.ps1"
 $PackCmd = Join-Path $ScriptDir "pack_client.cmd"
 
 function Write-Banner([string]$Text) {
@@ -90,6 +91,10 @@ Write-Host "PyInstaller：没有单独安装包，在 golgi-build 里 pip 安装
 Write-Host "下载时本窗口会显示 10%、20% …… 进度。"
 
 Wait-Step "第 2/5 步  检查这台电脑已经有什么"
+if (-not [string]::IsNullOrWhiteSpace($Repo) -and (Test-Path -LiteralPath $EnsureSpec)) {
+    Write-Host "若客户端缺 build_and_pack.bat 点名的 spec，会从 templates 拷一份（不覆盖已有文件）。"
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $EnsureSpec $Repo
+}
 if ([string]::IsNullOrWhiteSpace($Repo)) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $CheckPs1
 } else {

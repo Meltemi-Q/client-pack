@@ -17,6 +17,8 @@ D:\golgi\
 1. 双击 `一键安装打包工具.cmd`（每步按 Enter）。第一次会下 Miniconda / Inno / ffmpeg，再装 Python 依赖，大概 20–40 分钟。
 2. 双击 `一键打包.cmd`。打完看 `客户端仓库\dist\installer\*_setup_*.exe`。
 
+客户端 git 里可能没有 `Golgi_fNIRS_community.spec`（bat 要这个名字）。一键打包会从本仓库 `templates\` 自动拷进去，已有文件不覆盖。不要用 git 里那份 `fNIRS_Community.spec` 打现在这套安装包。
+
 工具安装：Miniconda、Inno Setup **6.7.3**（官网固定包，不是会跳到 7 的 `is.exe`）、ffmpeg（Gyan 8.0 essentials，真二进制，不是 scoop/商店 shim）。  
 PyInstaller 不是独立安装包，由仓库里的 `setup_build_env.bat` 装进 conda 环境 `golgi-build`（`pyinstaller==6.20.0`）。
 

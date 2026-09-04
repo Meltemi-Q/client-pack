@@ -10,9 +10,11 @@ description: |
 
 # Windows client pack
 
-Recipe for a client checkout that has `build_and_pack.bat` + `setup_build_env.bat` + `installer.iss` + an onedir `.spec` (`COLLECT`). This folder is not the app source. Do not copy client code here. Do not put secrets here.
+Recipe for a client checkout that has `build_and_pack.bat` + `setup_build_env.bat` + `installer.iss` + an onedir `.spec` (`COLLECT`). This folder is not the app source. Do not put secrets here.
 
-Do not hardcode product names. Point `-Repo` at the checkout; `check_pack_env.ps1` prints the spec and exe name it found. `build_and_pack.bat` in that checkout is the source of truth for the installer filename.
+`templates\Golgi_fNIRS_community.spec` is the working onedir spec. `develop2` currently ships `fNIRS_Community.spec` (broken onefile/onedir mix) while `build_and_pack.bat` calls `Golgi_fNIRS_community.spec`. `ensure_pack_spec.ps1` copies the template into the checkout if that filename is missing. Do not overwrite a spec already in the checkout.
+
+Point `-Repo` at the checkout; `check_pack_env.ps1` prints the spec and exe name it found. `build_and_pack.bat` in that checkout is the source of truth for the installer filename.
 
 Shared pins: Python 3.8, PySide6 6.6.2, shiboken6 6.6.2, PyInstaller 6.20.0, Inno Setup 6 `ISCC.exe`. Extra files (json, fonts, wav templates, ffmpeg, vendor trees) are whatever that checkout's pack script requires.
 
@@ -37,7 +39,7 @@ Do **not** fetch `https://jrsoftware.org/download.php/is.exe` (tracks Inno 7). P
 ### 0) Confirm the job
 
 1. `NOW`: Windows **client installer** pack (onedir + Inno), not onefile.
-2. `NOW`: locate the client checkout (`build_and_pack.bat` + `setup_build_env.bat` + `installer.iss` + a `*.spec` that contains `COLLECT`). If the path has Chinese or other non-ASCII, stop and move it.
+2. `NOW`: locate the client checkout (`build_and_pack.bat` + `setup_build_env.bat` + `installer.iss`). Run `scripts\ensure_pack_spec.ps1 %REPO%` so the spec named by the bat is present (copy from `templates\` if git does not have it). Need an onedir spec with `COLLECT`. If the path has Chinese or other non-ASCII, stop and move it.
 
 Set `SKILL` = this folder, `REPO` = the client checkout. CMD only, not Git Bash.
 

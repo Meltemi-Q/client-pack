@@ -14,7 +14,7 @@
 
 - `setup_build_env.bat`
 - `build_and_pack.bat`
-- 本仓库里带 `COLLECT` 的 onedir `.spec`（检查脚本会打印它找到的文件名和 exe 名）
+- 本仓库 `templates\Golgi_fNIRS_community.spec`（onedir，`COLLECT`）。客户端 git 若没有 bat 点名的那个文件，一键打包会拷这份进去
 - `installer.iss`
 - `requirements.txt`（已钉死 `pyinstaller==6.20.0`、`PySide6==6.6.2`、`shiboken6==6.6.2`）
 - `VERSION.txt`
@@ -25,6 +25,7 @@
 |------|------------|
 | 写着 `--onefile` 的 md/txt | 成功链是 onedir + Inno，不是单文件 exe |
 | 没有 `COLLECT` 的 `.spec` | 旧 onefile spec，不要用 |
+| 客户端 git 里的 `fNIRS_Community.spec` | 名字对不上 `build_and_pack.bat`，而且 onefile/onedir 混在一起。要用 `templates\Golgi_fNIRS_community.spec` |
 | README 里别的 conda 环境名 | 打包必须 `golgi-build` |
 
 同事最常见的失败：打开仓库里第一份带「打包」字样的 md，按 onefile 或别的 conda 环境做。
@@ -131,6 +132,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <skill>\scripts\bootstrap_pa
 
 ```bat
 set GOLGI_FFMPEG=%LOCALAPPDATA%\Programs\ffmpeg\bin\ffmpeg.exe
+```
+
+### 6.6 客户端没有 `Golgi_fNIRS_community.spec`
+
+`build_and_pack.bat` 写死调用这个文件名。`develop2` 里目前只有 `fNIRS_Community.spec`，按那份打会失败或打出不对的包。
+
+处理：一键安装 / 一键打包会自动从本仓库 `templates\` 拷一份（不覆盖已有文件）。也可以手动：
+
+```bat
+copy <skill>\templates\Golgi_fNIRS_community.spec <client_repo>\Golgi_fNIRS_community.spec
 ```
 
 ### 7. 缺资源：wav / json / 字体 / toml
