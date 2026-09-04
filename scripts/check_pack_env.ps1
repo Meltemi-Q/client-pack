@@ -418,6 +418,45 @@ else {
     $hardFail++
 }
 
+function Test-RealFfmpegFile([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try { return ((Get-Item -LiteralPath $Path).Length -ge 1000000) } catch { return $false }
+}
+
+$ffmpeg = $null
+if (Test-RealFfmpegFile $env:GOLGI_FFMPEG) {
+    $ffmpeg = $env:GOLGI_FFMPEG
+}
+if (-not $ffmpeg) {
+    $whereOut = & where.exe ffmpeg.exe 2>$null
+    foreach ($hit in @($whereOut)) {
+        if ($null -eq $hit) { continue }
+        $p = $hit.ToString().Trim()
+        if (Test-RealFfmpegFile $p) { $ffmpeg = $p; break }
+    }
+}
+if (-not $ffmpeg) {
+    $ffHints = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\ffmpeg\bin\ffmpeg.exe"),
+        (Join-Path $env:USERPROFILE "ffmpeg\bin\ffmpeg.exe"),
+        "C:\ffmpeg\bin\ffmpeg.exe",
+        (Join-Path $env:USERPROFILE "scoop\apps\ffmpeg\current\bin\ffmpeg.exe")
+    )
+    foreach ($p in $ffHints) {
+        if (Test-RealFfmpegFile $p) { $ffmpeg = $p; break }
+    }
+}
+if ($ffmpeg) {
+    $ffLen = (Get-Item -LiteralPath $ffmpeg).Length
+    Write-Check -Name "ffmpeg" -Status "PASS" -Detail ("{0} ({1} bytes)" -f $ffmpeg, $ffLen)
+}
+else {
+    $boot = Join-Path $PSScriptRoot "bootstrap_pack_tools.ps1"
+    Write-Check -Name "ffmpeg" -Status "FAIL" -Detail "real ffmpeg.exe (>= 1MB) missing. ACT: powershell -NoProfile -ExecutionPolicy Bypass -File `"$boot`". A scoop shim is not enough."
+    $hardFail++
+}
+
 Write-Host ""
 if ($hardFail -gt 0) {
     Write-Host ("RESULT=FAIL  hard={0} setup={1}" -f $hardFail, $needSetup)

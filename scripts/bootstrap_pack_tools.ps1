@@ -16,7 +16,8 @@ param(
     [string]$Repo = "",
     [switch]$ToolsOnly,
     [switch]$SkipMiniconda,
-    [switch]$SkipInno
+    [switch]$SkipInno,
+    [switch]$SkipFfmpeg
 )
 
 $ErrorActionPreference = "Continue"
@@ -31,7 +32,14 @@ $MinicondaWingetId = "Anaconda.Miniconda3"
 $InnoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
 $InnoWingetId = "JRSoftware.InnoSetup"
 $InnoWingetVersion = "6.7.3"
+# ffmpeg (real Windows build, not a scoop/winget shim). Landing: https://www.gyan.dev/ffmpeg/builds/
+# Pin the GitHub immutable zip. Do NOT use gyan.dev/ffmpeg-release-essentials.zip as the
+# fetch URL — it redirects and hangs on Windows PowerShell HttpWebRequest/some GET paths.
+$FfmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-essentials_build.zip"
+$FfmpegWingetId = "Gyan.FFmpeg.Essentials"
+$FfmpegPrefix = Join-Path $env:LOCALAPPDATA "Programs\ffmpeg"
 $MinicondaPrefix = Join-Path $env:USERPROFILE "Miniconda3"
+$FfmpegMinBytes = 1000000
 
 function Write-Step([string]$Msg) { Write-Host ("[bootstrap] " + $Msg) }
 function Write-Next([string]$Msg) { Write-Host ("NEXT=" + $Msg) }
@@ -65,6 +73,45 @@ function Find-CondaBat {
     return $null
 }
 
+function Test-RealFfmpeg([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        return ((Get-Item -LiteralPath $Path).Length -ge $FfmpegMinBytes)
+    } catch {
+        return $false
+    }
+}
+
+function Find-Ffmpeg {
+    if (Test-RealFfmpeg $env:GOLGI_FFMPEG) { return $env:GOLGI_FFMPEG }
+    $whereOut = & where.exe ffmpeg.exe 2>$null
+    if ($whereOut) {
+        foreach ($hit in @($whereOut)) {
+            $p = $hit.ToString().Trim()
+            if (Test-RealFfmpeg $p) { return $p }
+        }
+    }
+    $hints = @(
+        (Join-Path $FfmpegPrefix "bin\ffmpeg.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\ffmpeg\bin\ffmpeg.exe"),
+        (Join-Path $env:USERPROFILE "ffmpeg\bin\ffmpeg.exe"),
+        "C:\ffmpeg\bin\ffmpeg.exe",
+        (Join-Path $env:USERPROFILE "scoop\apps\ffmpeg\current\bin\ffmpeg.exe")
+    )
+    foreach ($p in $hints) {
+        if (Test-RealFfmpeg $p) { return $p }
+    }
+    $wingetRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+    if (Test-Path -LiteralPath $wingetRoot) {
+        $hits = @(Get-ChildItem -LiteralPath $wingetRoot -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue)
+        foreach ($h in $hits) {
+            if (Test-RealFfmpeg $h.FullName) { return $h.FullName }
+        }
+    }
+    return $null
+}
+
 function Find-Iscc {
     if (-not [string]::IsNullOrWhiteSpace($env:GOLGI_ISCC) -and (Test-Path -LiteralPath $env:GOLGI_ISCC)) {
         return $env:GOLGI_ISCC
@@ -85,6 +132,57 @@ function Find-Iscc {
     return $null
 }
 
+function Test-LocalPortOpen([int]$Port) {
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $iar = $tcp.BeginConnect("127.0.0.1", $Port, $null, $null)
+        $ok = $iar.AsyncWaitHandle.WaitOne(400)
+        $connected = $ok -and $tcp.Connected
+        $tcp.Close()
+        return $connected
+    } catch {
+        return $false
+    }
+}
+
+function Clear-StaleLocalProxy {
+    # conda/requests on Windows fall back to Internet Settings if env proxy is
+    # empty. A closed Clash/V2Ray on 127.0.0.1:7890 then becomes ProxyError.
+    $dead = @()
+    $names = @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    foreach ($n in $names) {
+        $val = [Environment]::GetEnvironmentVariable($n, "Process")
+        if ([string]::IsNullOrWhiteSpace($val)) { continue }
+        if (($val -match '127\.0\.0\.1' -or $val -match 'localhost') -and $val -match ':(\d+)') {
+            $port = [int]$Matches[1]
+            if (-not (Test-LocalPortOpen $port)) {
+                Remove-Item -Path ("Env:" + $n) -ErrorAction SilentlyContinue
+                $dead += ($n + "=" + $val)
+            }
+        }
+    }
+    $ieProxy = ""
+    try {
+        $ie = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -ErrorAction Stop
+        if ($ie.ProxyEnable -eq 1) { $ieProxy = [string]$ie.ProxyServer }
+    } catch {}
+    $ieDead = $false
+    if ($ieProxy -and ($ieProxy -match '127\.0\.0\.1' -or $ieProxy -match 'localhost')) {
+        $port = 7890
+        if ($ieProxy -match ':(\d+)') { $port = [int]$Matches[1] }
+        if (-not (Test-LocalPortOpen $port)) {
+            $ieDead = $true
+            $dead += ("InternetSettings=" + $ieProxy)
+        }
+    }
+    if ($ieDead -or $dead.Count -gt 0) {
+        # Non-empty env proxy dict stops urllib from using the registry proxy.
+        $env:NO_PROXY = "*"
+        $env:no_proxy = "*"
+        Write-Step ("stale local proxy disabled via NO_PROXY=*: " + ($dead -join "; "))
+    }
+}
+
 function Add-CondaToProcessPath([string]$CondaBat) {
     $condabin = Split-Path -Parent $CondaBat
     $root = Split-Path -Parent $condabin
@@ -96,37 +194,9 @@ function Get-Installer([string]$Url, [string]$OutFile) {
     Write-Step ("download " + $Url)
     Write-Step ("save    " + $OutFile)
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $req = [System.Net.HttpWebRequest]::Create($Url)
-    $req.UserAgent = "golgi-pack-bootstrap/1.0"
-    $req.AllowAutoRedirect = $true
-    $req.Timeout = 180000
-    $req.ReadWriteTimeout = 180000
-    $resp = $req.GetResponse()
-    try {
-        $expected = $resp.ContentLength
-        $src = $resp.GetResponseStream()
-        $fs = [IO.File]::Create($OutFile)
-        try {
-            $buf = New-Object byte[] 65536
-            $n = [int64]0
-            $lastPct = -10
-            while (($read = $src.Read($buf, 0, $buf.Length)) -gt 0) {
-                $fs.Write($buf, 0, $read)
-                $n += $read
-                if ($expected -gt 0) {
-                    $pct = [int](($n * 100) / $expected)
-                    if ($pct -ge ($lastPct + 10) -or ($pct -eq 100 -and $lastPct -lt 100)) {
-                        Write-Host ("[bootstrap] download " + $pct + "%  " + $n + "/" + $expected + " bytes")
-                        $lastPct = $pct
-                    }
-                }
-            }
-        } finally {
-            $fs.Close()
-        }
-    } finally {
-        $resp.Close()
-    }
+    # Invoke-WebRequest follows redirects more reliably than HttpWebRequest on
+    # Windows PowerShell 5.1 (gyan.dev ffmpeg zip redirects to GitHub).
+    Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300 -UserAgent "golgi-pack-bootstrap/1.0"
     if (-not (Test-Path -LiteralPath $OutFile)) {
         throw ("download produced no file: " + $OutFile)
     }
@@ -162,6 +232,7 @@ New-Item -ItemType Directory -Path $work -Force | Out-Null
 Write-Step "start"
 Write-Step ("admin=" + (Test-IsAdmin))
 Write-Step ("work=" + $work)
+Clear-StaleLocalProxy
 
 # ----- Miniconda -----
 $condaBat = Find-CondaBat
@@ -267,8 +338,68 @@ if ($SkipInno) {
     Write-Step ("inno ready: " + $iscc)
 }
 
+# ----- ffmpeg (real binary, >= 1MB; required by build_and_pack.bat) -----
+$ffmpeg = Find-Ffmpeg
+if ($SkipFfmpeg) {
+    Write-Step "ffmpeg skipped by flag"
+} elseif ($ffmpeg) {
+    Write-Step ("ffmpeg already present: " + $ffmpeg)
+} else {
+    Write-Step "ffmpeg missing; installing Gyan essentials build (not a scoop/store shim)"
+    $got = Invoke-WingetInstall -Id $FfmpegWingetId
+    $ffmpeg = Find-Ffmpeg
+    if (-not $ffmpeg) {
+        $zip = Join-Path $work "ffmpeg-release-essentials.zip"
+        try {
+            Get-Installer -Url $FfmpegUrl -OutFile $zip
+        } catch {
+            Write-Host "RESULT=FAIL"
+            Write-Next ("download ffmpeg failed: " + $_.Exception.Message + "  URL=" + $FfmpegUrl)
+            exit 1
+        }
+        $extract = Join-Path $work "ffmpeg_extract"
+        if (Test-Path -LiteralPath $extract) {
+            Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType Directory -Path $extract -Force | Out-Null
+        Write-Step ("extract " + $zip)
+        Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+        $foundExe = @(Get-ChildItem -LiteralPath $extract -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge $FfmpegMinBytes } | Select-Object -First 1)
+        if ($foundExe.Count -lt 1) {
+            Write-Host "RESULT=FAIL"
+            Write-Next "ffmpeg zip extracted but ffmpeg.exe >= 1MB was not inside it"
+            exit 1
+        }
+        $buildRoot = $foundExe[0].Directory.Parent.FullName
+        if (Test-Path -LiteralPath $FfmpegPrefix) {
+            Remove-Item -LiteralPath $FfmpegPrefix -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $FfmpegPrefix) -Force | Out-Null
+        Write-Step ("install to " + $FfmpegPrefix)
+        Copy-Item -LiteralPath $buildRoot -Destination $FfmpegPrefix -Recurse -Force
+        $ffmpeg = Join-Path $FfmpegPrefix "bin\ffmpeg.exe"
+        if (-not (Test-RealFfmpeg $ffmpeg)) {
+            $ffmpeg = Find-Ffmpeg
+        }
+    }
+    if (-not (Test-RealFfmpeg $ffmpeg)) {
+        Write-Host "RESULT=FAIL"
+        Write-Next "ffmpeg installed but no real ffmpeg.exe (>= 1MB) was found. Set GOLGI_FFMPEG to the real binary."
+        exit 1
+    }
+    Write-Step ("set user env GOLGI_FFMPEG=" + $ffmpeg)
+    [Environment]::SetEnvironmentVariable("GOLGI_FFMPEG", $ffmpeg, "User")
+    $env:GOLGI_FFMPEG = $ffmpeg
+    $ffBin = Split-Path -Parent $ffmpeg
+    if ($env:PATH -notlike ("*" + $ffBin + "*")) {
+        $env:PATH = ($ffBin + ";" + $env:PATH)
+    }
+    Write-Step ("ffmpeg ready: " + $ffmpeg)
+}
+
 $condaBat = Find-CondaBat
 $iscc = Find-Iscc
+$ffmpeg = Find-Ffmpeg
 if (-not $condaBat) {
     Write-Host "RESULT=FAIL"
     Write-Next "conda.bat still missing after bootstrap"
@@ -279,10 +410,16 @@ if (-not $iscc) {
     Write-Next "ISCC.exe still missing after bootstrap"
     exit 1
 }
+if (-not $ffmpeg) {
+    Write-Host "RESULT=FAIL"
+    Write-Next "ffmpeg.exe still missing after bootstrap (need a real binary >= 1MB, not a shim)"
+    exit 1
+}
 
 Write-Host "RESULT=TOOLS_READY"
 Write-Host ("CONDA_BAT=" + $condaBat)
 Write-Host ("ISCC=" + $iscc)
+Write-Host ("FFMPEG=" + $ffmpeg)
 
 # ----- optional golgi-build + PyInstaller pin -----
 if ($ToolsOnly) {
@@ -312,9 +449,26 @@ if (-not (Test-Path -LiteralPath $setupBat)) {
     exit 1
 }
 
+Write-Step "ensure conda env golgi-build exists as Python 3.8 64-bit (conda-forge 3.8.20)"
+$probeEnv = & $condaBat run -n golgi-build python -c "import sys,struct; raise SystemExit(0 if sys.version_info[:2]==(3,8) and struct.calcsize('P')*8==64 else 2)" 2>$null
+$probeCode = $LASTEXITCODE
+if ($probeCode -ne 0) {
+    Write-Step "creating conda env golgi-build python=3.8.20 -c conda-forge"
+    & $condaBat create -y -n golgi-build python=3.8.20 pip -c conda-forge
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "RESULT=FAIL"
+        Write-Next "conda create golgi-build python=3.8.20 -c conda-forge failed"
+        exit 1
+    }
+}
+
 Write-Step ("running setup_build_env.bat in " + $Repo)
-Write-Step "this creates conda env golgi-build (Python 3.8.20) and pip-installs PySide6==6.6.2, shiboken6==6.6.2, pyinstaller==6.20.0"
+Write-Step "this pip-installs PySide6==6.6.2, shiboken6==6.6.2, pyinstaller==6.20.0 into golgi-build"
 $env:GOLGI_NOPAUSE = "1"
+if ($ffmpeg) { $env:GOLGI_FFMPEG = $ffmpeg }
+# PyPI on company networks often stalls on large wheels (PySide6/pywin32).
+$env:PIP_DEFAULT_TIMEOUT = "300"
+$env:PIP_RETRIES = "15"
 $setupProc = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "call", $setupBat) -WorkingDirectory $Repo -Wait -PassThru -NoNewWindow
 $setupCode = $setupProc.ExitCode
 if ($setupCode -ne 0) {

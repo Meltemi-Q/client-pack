@@ -85,6 +85,7 @@ Write-Host "这不是给用户装客户端软件的安装向导。"
 Write-Host "这里只装「打包用的工具」，必要时再打出安装包。"
 Write-Host "Miniconda：Anaconda 官网安装包，静默安装。"
 Write-Host "Inno Setup：官网 6.7.3，静默安装。"
+Write-Host "ffmpeg：Gyan essentials 真二进制，静默解压。商店/scoop 的小 shim 不能用。"
 Write-Host "PyInstaller：没有单独安装包，在 golgi-build 里 pip 安装。"
 Write-Host "下载时本窗口会显示 10%、20% …… 进度。"
 
@@ -104,7 +105,7 @@ $needTools = $true
 if ($checkCode -eq 0 -or $checkCode -eq 2) { $needTools = $false }
 
 if ($Mode -eq "Install" -or $Mode -eq "All") {
-    Wait-Step "第 3/5 步  安装 Miniconda 和 Inno Setup 6（已有则跳过）"
+    Wait-Step "第 3/5 步  安装 Miniconda、Inno Setup 6、ffmpeg（已有则跳过）"
     if (-not $needTools) {
         Write-Host "本机已有 conda 和 ISCC，跳过下载。"
     } else {

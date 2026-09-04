@@ -6,11 +6,21 @@ Windows 客户端打包：PyInstaller onedir + Inno Setup。
 
 ## 同事
 
-1. 双击 `一键安装打包工具.cmd`（每步按 Enter）
-2. 双击 `一键打包.cmd`
+目录建议（纯英文路径）：
 
-工具安装：Miniconda、Inno Setup **6.7.3**（官网固定包，不是会跳到 7 的 `is.exe`）。  
+```
+D:\golgi\
+  client-pack\              ← 本仓库
+  medical_version_client\   ← 客户端源码（有 build_and_pack.bat）
+```
+
+1. 双击 `一键安装打包工具.cmd`（每步按 Enter）。第一次会下 Miniconda / Inno / ffmpeg，再装 Python 依赖，大概 20–40 分钟。
+2. 双击 `一键打包.cmd`。打完看 `客户端仓库\dist\installer\*_setup_*.exe`。
+
+工具安装：Miniconda、Inno Setup **6.7.3**（官网固定包，不是会跳到 7 的 `is.exe`）、ffmpeg（Gyan 8.0 essentials，真二进制，不是 scoop/商店 shim）。  
 PyInstaller 不是独立安装包，由仓库里的 `setup_build_env.bat` 装进 conda 环境 `golgi-build`（`pyinstaller==6.20.0`）。
+
+本机若开过 Clash 但已经关掉，bootstrap 会自动设 `NO_PROXY=*`，避免 conda/pip 去连死掉的 `127.0.0.1:7890`。
 
 ## Agent
 
@@ -23,4 +33,4 @@ scripts\pack_client.cmd <client_repo>
 
 ## 固定版本
 
-Python 3.8、PySide6 6.6.2、shiboken6 6.6.2、PyInstaller 6.20.0、Inno Setup 6.7.3。
+Python 3.8、PySide6 6.6.2、shiboken6 6.6.2、PyInstaller 6.20.0、Inno Setup 6.7.3、ffmpeg（真 exe ≥ 1MB）。

@@ -63,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <skill>\scripts\bootstrap_pa
 
 一键入口用 skill 里的 `scripts\pack_client.cmd`，不要双击 `build_and_pack.bat`：后者会 `pause`、不先检查环境、CMD 找不到 `conda.bat` 时直接停。
 
-`conda create` 若报 `ProxyError` / `WinError 10061`，多半是 conda/libmamba 走了坏代理，系统代理和 pip 却是通的。先清掉 `HTTP_PROXY`/`HTTPS_PROXY`，或换能上网的网络后再跑 `setup_build_env.bat`。不要用系统自带的 Python 3.11 打包。
+`conda create` 若报 `ProxyError` / `WinError 10061`，多半是 conda/libmamba 走了 Windows 系统代理里已经关掉的 Clash `127.0.0.1:7890`。环境变量里可能是空的，但 Python 仍会读 Internet 设置。bootstrap 发现本机 7890 没人听，会设 `NO_PROXY=*`。`pip install` 下 PySide6 / pywin32 大轮子若 `Read timed out`，bootstrap 会设 `PIP_DEFAULT_TIMEOUT=300` 和 `PIP_RETRIES=15` 再装。不要用系统自带的 Python 3.11 打包。
 
 ### 3. Python 不对
 
@@ -122,6 +122,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <skill>\scripts\bootstrap_pa
 ```
 
 不要装 Inno 5。若必须用便携目录：`set GOLGI_ISCC=D:\Tools\Inno Setup 6\ISCC.exe`（指向 `ISCC.exe` 本身）。
+
+### 6.5 没有真 ffmpeg
+
+`build_and_pack.bat` 会 `find_ffmpeg()`，并且要把 `ffmpeg.exe` 打进 `_internal`。scoop/商店的 shim 往往只有几十 KB，脚本会当成假的。
+
+处理：跑同一个 bootstrap。它会把 Gyan 8.0 essentials（GitHub 不可变包）解压到 `%LOCALAPPDATA%\Programs\ffmpeg`，并写用户环境变量 `GOLGI_FFMPEG`。真文件必须 **≥ 1MB**。不要用 gyan.dev 那个会跳转的 `ffmpeg-release-essentials.zip` 当下载地址。
+
+```bat
+set GOLGI_FFMPEG=%LOCALAPPDATA%\Programs\ffmpeg\bin\ffmpeg.exe
+```
 
 ### 7. 缺资源：wav / json / 字体 / toml
 
@@ -183,7 +193,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ...\check_pack_env.ps1 <repo
 
 1. 64 位 Windows。
 2. 仓库放在纯英文路径。
-3. 跑 `scripts\bootstrap_pack_tools.ps1 -Repo <client_repo>`（Miniconda + Inno 6 + golgi-build / PyInstaller 6.20.0）。
+3. 跑 `scripts\bootstrap_pack_tools.ps1 -Repo <client_repo>`（Miniconda + Inno 6 + ffmpeg + golgi-build / PyInstaller 6.20.0）。
 4. 再打包：
 
 ```bat

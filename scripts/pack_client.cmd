@@ -93,9 +93,15 @@ if "!CHK!"=="2" (
   )
 )
 
+if not defined GOLGI_FFMPEG (
+  if exist "%LOCALAPPDATA%\Programs\ffmpeg\bin\ffmpeg.exe" set "GOLGI_FFMPEG=%LOCALAPPDATA%\Programs\ffmpeg\bin\ffmpeg.exe"
+)
+if defined GOLGI_FFMPEG echo [pack] GOLGI_FFMPEG=%GOLGI_FFMPEG%
+
 echo.
 echo [pack] Calling build_and_pack.bat ...
-call "%REPO%\build_and_pack.bat"
+REM build_and_pack.bat still pauses on success/failure; feed a newline so unattended pack can finish.
+echo.| call "%REPO%\build_and_pack.bat"
 if errorlevel 1 (
   echo [ERROR] build_and_pack.bat failed.
   exit /b 1
