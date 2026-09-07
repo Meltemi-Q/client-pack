@@ -17,4 +17,13 @@ D:\golgi\pack-api\start_pack_api.cmd
 D:\golgi\pack-api\install_autostart.cmd
 ```
 
-拉最新代码需要在 `D:\golgi\pack-api\git.token` 放公司仓库只读 token（不要用个人 GitHub 账号登录）。没有 token 时会打当前目录里已有的代码。
+打包机 **不要登录个人 GitHub 账号**。只给公司仓库 `geerji/medical_version_client-` 只读权限：
+
+1. SSH 部署密钥（优先）：私钥 `D:\golgi\pack-api\id_ed25519_geerji_client`，公钥见 `105-deploy-key.pub`。仓库管理员在  
+   `https://github.com/geerji/medical_version_client-/settings/keys`  
+   添加 **Allow write access 不要勾**。
+2. 备选：`D:\golgi\pack-api\git.token` 放 **fine-grained PAT**，只授权这一个仓库的 Contents: Read。凭据助手不会对别的 GitHub 仓库吐 token。
+
+没有以上权限时，会打当前目录里已有的代码。
+
+拷到 NAS 需要 `D:\golgi\pack-api\nas.cred`（格式见 `nas.cred.example`）。没有这份文件时安装包仍会放到本机 `D:\golgi\pack-out`（共享名 `pack-out`）。

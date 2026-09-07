@@ -27,6 +27,16 @@ NAS_DIR = os.environ.get(
     "PACK_NAS_DIR",
     r"\\nas.golgi-bci.com\软件组共享\最新社区筛查客户端",
 )
+NAS_DIR_IP = os.environ.get(
+    "PACK_NAS_DIR_IP",
+    r"\\192.168.0.89\软件组共享\最新社区筛查客户端",
+)
+NAS_CRED = Path(os.environ.get("PACK_NAS_CRED", r"D:\golgi\pack-api\nas.cred"))
+GIT_KEY = Path(os.environ.get("PACK_GIT_KEY", r"D:\golgi\pack-api\id_ed25519_geerji_client"))
+GIT_TOKEN = Path(os.environ.get("PACK_GIT_TOKEN", r"D:\golgi\pack-api\git.token"))
+GIT_HELPER = Path(os.environ.get("PACK_GIT_HELPER", r"D:\golgi\pack-api\git-credential-geerji.cmd"))
+GIT_SSH_URL = "git@github.com:geerji/medical_version_client-.git"
+GIT_HTTPS_URL = "https://github.com/geerji/medical_version_client-.git"
 LOCAL_OUT = Path(os.environ.get("PACK_LOCAL_OUT", r"D:\golgi\pack-out"))
 BRANCH = os.environ.get("PACK_BRANCH", "develop2")
 FFMPEG = os.environ.get(
@@ -170,6 +180,36 @@ def _pack_env():
     return env
 
 
+def _read_kv(path: Path):
+    data = {}
+    if not path.is_file():
+        return data
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip().upper()] = value.strip()
+    return data
+
+
+def _git_ssh_env(env):
+    extra = env.copy()
+    extra["GIT_TERMINAL_PROMPT"] = "0"
+    extra["GIT_LFS_SKIP_SMUDGE"] = "1"
+    if GIT_KEY.is_file():
+        extra["GIT_SSH_COMMAND"] = (
+            "ssh -i " + str(GIT_KEY) + " -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+        )
+    if GIT_HELPER.is_file() and GIT_TOKEN.is_file():
+        extra["GIT_CONFIG_COUNT"] = "2"
+        extra["GIT_CONFIG_KEY_0"] = "credential.helper"
+        extra["GIT_CONFIG_VALUE_0"] = ""
+        extra["GIT_CONFIG_KEY_1"] = "credential.https://github.com.helper"
+        extra["GIT_CONFIG_VALUE_1"] = "!" + str(GIT_HELPER)
+    return extra
+
+
 def _git_pull(env, log_buf):
     set_progress(step="pull", step_label="正在拉最新代码", percent=4, detail="git fetch " + BRANCH)
     if not (REPO / ".git").exists():
@@ -180,33 +220,26 @@ def _git_pull(env, log_buf):
     )
     if "origin" not in (remotes.stdout or ""):
         subprocess.run(
-            ["git", "remote", "add", "origin", "https://github.com/geerji/medical_version_client-.git"],
+            ["git", "remote", "add", "origin", GIT_SSH_URL],
             cwd=str(REPO),
             env=env,
             capture_output=True,
             text=True,
         )
-    token_file = Path(r"D:\golgi\pack-api\git.token")
-    fetch_cmd = ["git", "fetch", "origin", BRANCH]
-    extra_env = env
-    if token_file.is_file():
-        token = token_file.read_text(encoding="utf-8").strip()
-        if token:
-            extra_env = env.copy()
-            extra_env["GIT_ASKPASS"] = "echo"
-            extra_env["GIT_TOKEN"] = token
-            fetch_cmd = [
-                "git",
-                "-c",
-                "http.extraHeader=Authorization: bearer " + token,
-                "fetch",
-                "origin",
-                BRANCH,
-            ]
-    rc = _run(fetch_cmd, REPO, extra_env, log_buf, ("pull", "正在拉最新代码", 6))
+    extra_env = _git_ssh_env(env)
+    rc = _run(["git", "fetch", "origin", BRANCH], REPO, extra_env, log_buf, ("pull", "正在拉最新代码", 6))
+    if rc != 0 and GIT_TOKEN.is_file():
+        set_progress(detail="SSH 部署密钥还没在 GitHub 生效，改用公司仓库只读 token", percent=6)
+        rc = _run(
+            ["git", "fetch", GIT_HTTPS_URL, BRANCH + ":refs/remotes/origin/" + BRANCH],
+            REPO,
+            extra_env,
+            log_buf,
+            ("pull", "正在拉最新代码", 7),
+        )
     if rc != 0:
         set_progress(
-            detail="拉代码失败（105 上可能还没配公司仓库只读权限），改为打当前目录里的代码",
+            detail="拉代码失败（105 还没有这个公司仓库的只读权限），改为打当前目录里的代码",
             percent=8,
         )
         return True
@@ -262,19 +295,65 @@ def _newest_installer():
     return files[0] if files else None
 
 
+def _ensure_nas():
+    for candidate in (NAS_DIR, NAS_DIR_IP):
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    kv = _read_kv(NAS_CRED)
+    user = os.environ.get("PACK_NAS_USER") or kv.get("USER") or kv.get("USERNAME")
+    password = os.environ.get("PACK_NAS_PASS") or kv.get("PASS") or kv.get("PASSWORD")
+    if not user or not password:
+        return None
+    for host in ("nas.golgi-bci.com", "192.168.0.89"):
+        share = r"\\%s\软件组共享" % host
+        subprocess.run(
+            ["cmdkey", "/add:" + host, "/user:" + user, "/pass:" + password],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        subprocess.run(
+            ["net", "use", share, "/delete", "/y"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        subprocess.run(
+            ["net", "use", share, "/persistent:yes"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    for candidate in (NAS_DIR, NAS_DIR_IP):
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    return None
+
+
 def _upload(setup: Path):
     set_progress(step="upload", step_label="正在拷到输出目录", percent=94, detail="复制 " + setup.name)
     LOCAL_OUT.mkdir(parents=True, exist_ok=True)
     local_dest = LOCAL_OUT / setup.name
     shutil.copy2(str(setup), str(local_dest))
     set_progress(local_path=str(local_dest), installer=setup.name, percent=96, detail="已拷到本机 " + str(local_dest))
+    nas_root = _ensure_nas()
     nas_dest = None
+    if not nas_root:
+        set_progress(
+            nas_path=None,
+            percent=97,
+            detail="本机已有安装包；NAS 还没登录（105 上缺少 nas.cred）",
+        )
+        return str(local_dest)
     try:
-        os.makedirs(NAS_DIR, exist_ok=True)
-        nas_dest = os.path.join(NAS_DIR, setup.name)
+        os.makedirs(nas_root, exist_ok=True)
+        nas_dest = os.path.join(nas_root, setup.name)
         shutil.copy2(str(setup), nas_dest)
         marker = os.path.join(
-            NAS_DIR,
+            nas_root,
             time.strftime("%Y%m%d %H%M%S") + " API pack " + setup.name.replace(".exe", "") + ".txt",
         )
         commit = snapshot().get("commit") or ""
@@ -287,7 +366,7 @@ def _upload(setup: Path):
         set_progress(
             nas_path=None,
             percent=97,
-            detail="本机已有安装包；NAS 拷贝失败（这台电脑可能没登录 NAS）：" + str(e)[:160],
+            detail="本机已有安装包；NAS 拷贝失败：" + str(e)[:160],
         )
     return nas_dest or str(local_dest)
 
