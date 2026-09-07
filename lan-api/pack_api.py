@@ -19,10 +19,25 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+_LAN = Path(__file__).resolve().parent
+_CLIENT_PACK_DEFAULT = _LAN.parent
+_GEERJI_ALL = _CLIENT_PACK_DEFAULT.parent
+
+
+def _first_existing(*candidates):
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(os.path.expandvars(raw))
+        if path.exists():
+            return path
+    return Path(os.path.expandvars(candidates[-1]))
+
+
 HOST = os.environ.get("PACK_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PACK_API_PORT", "8765"))
-REPO = Path(os.environ.get("PACK_REPO", r"D:\golgi\medical_version_client"))
-CLIENT_PACK = Path(os.environ.get("PACK_CLIENT_PACK", r"D:\golgi\client-pack"))
+REPO = Path(os.environ.get("PACK_REPO", str(_GEERJI_ALL / "medical_version_client")))
+CLIENT_PACK = Path(os.environ.get("PACK_CLIENT_PACK", str(_CLIENT_PACK_DEFAULT)))
 NAS_DIR = os.environ.get(
     "PACK_NAS_DIR",
     r"\\nas.golgi-bci.com\软件组共享\最新社区筛查客户端",
@@ -31,20 +46,27 @@ NAS_DIR_IP = os.environ.get(
     "PACK_NAS_DIR_IP",
     r"\\192.168.0.89\软件组共享\最新社区筛查客户端",
 )
-NAS_CRED = Path(os.environ.get("PACK_NAS_CRED", r"D:\golgi\pack-api\nas.cred"))
-GIT_KEY = Path(os.environ.get("PACK_GIT_KEY", r"D:\golgi\pack-api\id_ed25519_geerji_client"))
-GIT_TOKEN = Path(os.environ.get("PACK_GIT_TOKEN", r"D:\golgi\pack-api\git.token"))
-GIT_HELPER = Path(os.environ.get("PACK_GIT_HELPER", r"D:\golgi\pack-api\git-credential-geerji.cmd"))
+NAS_CRED = Path(os.environ.get("PACK_NAS_CRED", str(_LAN / "nas.cred")))
+GIT_KEY = Path(os.environ.get("PACK_GIT_KEY", str(_LAN / "id_ed25519_geerji_client")))
+GIT_TOKEN = Path(os.environ.get("PACK_GIT_TOKEN", str(_LAN / "git.token")))
+GIT_HELPER = Path(os.environ.get("PACK_GIT_HELPER", str(_LAN / "git-credential-geerji.cmd")))
 GIT_SSH_URL = "git@github.com:geerji/medical_version_client-.git"
 GIT_HTTPS_URL = "https://github.com/geerji/medical_version_client-.git"
-LOCAL_OUT = Path(os.environ.get("PACK_LOCAL_OUT", r"D:\golgi\pack-out"))
+LOCAL_OUT = Path(os.environ.get("PACK_LOCAL_OUT", str(_GEERJI_ALL / "_pack_out")))
 BRANCH = os.environ.get("PACK_BRANCH", "develop2")
-FFMPEG = os.environ.get(
-    "GOLGI_FFMPEG",
-    os.path.expandvars(r"%LOCALAPPDATA%\Programs\ffmpeg\bin\ffmpeg.exe"),
+FFMPEG = str(
+    _first_existing(
+        os.environ.get("GOLGI_FFMPEG"),
+        r"%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe",
+        r"%LOCALAPPDATA%\Programs\ffmpeg\bin\ffmpeg.exe",
+    )
 )
-CONDA_ROOT = Path(os.environ.get("PACK_CONDA_ROOT", os.path.expandvars(r"%USERPROFILE%\Miniconda3")))
-LOG_DIR = Path(os.environ.get("PACK_API_LOG", r"D:\golgi\pack-api\logs"))
+CONDA_ROOT = _first_existing(
+    os.environ.get("PACK_CONDA_ROOT"),
+    r"%USERPROFILE%\scoop\apps\miniconda3\current",
+    r"%USERPROFILE%\Miniconda3",
+)
+LOG_DIR = Path(os.environ.get("PACK_API_LOG", str(_LAN / "logs")))
 
 _lock = threading.Lock()
 _state = {

@@ -1,0 +1,6 @@
+lan-api/__pycache__/
+lan-api/logs/
+lan-api/nas.cred
+lan-api/git.token
+lan-api/id_ed25519_geerji_client
+lan-api/*.pyc

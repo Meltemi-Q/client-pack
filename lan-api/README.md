@@ -8,25 +8,15 @@
 
 浏览器打开：
 
-`http://192.168.0.105:8765`
+`http://192.168.0.226:8765`
 
 ## 这台打包机
 
+打包页跑在开发机本机（`192.168.0.226`），用这台电脑已有的 GitHub / NAS 登录。
+
 ```bat
-D:\golgi\pack-api\start_pack_api.cmd
-D:\golgi\pack-api\install_autostart.cmd
+D:\Programs\golgi\geerji_all\client-pack\lan-api\start_pack_api.cmd
+D:\Programs\golgi\geerji_all\client-pack\lan-api\install_autostart.cmd
 ```
 
-打包机 **不要登录个人 GitHub 账号**。
-
-当前默认（不用仓库管理员）：开发机已能拉 GitHub，定时把 `develop2` 推到 105。脚本 `sync_develop2_to_105.ps1`，计划任务 `GolgiSyncDevelop2To105`。开发机关机时 105 打最后一次同步到的代码。
-
-可选，让 105 自己拉 GitHub（仍不用登录个人账号）：
-
-1. SSH 部署密钥：私钥 `D:\golgi\pack-api\id_ed25519_geerji_client`，公钥见 `105-deploy-key.pub`。需要仓库 **admin** 加到  
-   `https://github.com/geerji/medical_version_client-/settings/keys`（不要勾写权限）。maintain 打不开这个页。
-2. `D:\golgi\pack-api\git.token` 放只授权这一个仓库 Contents: Read 的 fine-grained PAT。组织若要求审批，还是得找管理员。
-
-GitHub 直连失败时，打包页仍会快进本机已经同步过来的 `origin/develop2`。
-
-拷到 NAS 需要 `D:\golgi\pack-api\nas.cred`（格式见 `nas.cred.example`）。没有这份文件时安装包仍会放到本机 `D:\golgi\pack-out`（共享名 `pack-out`）。
+安装包会拷到 NAS；本机备份在 `D:\Programs\golgi\geerji_all\_pack_out`。
