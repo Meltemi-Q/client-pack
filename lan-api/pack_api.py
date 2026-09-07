@@ -555,7 +555,7 @@ PAGE = r"""<!DOCTYPE html>
 <main>
   <h1>社区筛查客户端打包</h1>
   <div class="on" id="alive">服务在运行</div>
-  <p class="sub">能打开这个页就说明服务是开着的，没有黑窗口。点「开始打包」会拉 develop2、打包并拷到 NAS。</p>
+  <p class="sub">点「开始打包」会拉 develop2、打包并拷到 NAS。</p>
   <div class="pct" id="pct">0%</div>
   <div class="step" id="step">空闲</div>
   <div class="bar" id="bar"><span id="fill"></span></div>
