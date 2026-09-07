@@ -239,17 +239,25 @@ def _git_pull(env, log_buf):
         )
     if rc != 0:
         set_progress(
-            detail="拉代码失败（105 还没有这个公司仓库的只读权限），改为打当前目录里的代码",
-            percent=8,
+            detail="GitHub 直连失败，尝试使用本机已同步过来的 origin/" + BRANCH,
+            percent=7,
         )
-        return True
     subprocess.run(["git", "checkout", BRANCH], cwd=str(REPO), env=env, capture_output=True)
-    subprocess.run(
+    merge = subprocess.run(
         ["git", "merge", "--ff-only", "origin/" + BRANCH],
         cwd=str(REPO),
         env=env,
         capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
+    if merge.returncode != 0 and rc != 0:
+        set_progress(
+            detail="拉代码失败（105 还没有这个公司仓库的只读权限），改为打当前目录里的代码",
+            percent=8,
+        )
+        return True
     head = subprocess.run(
         ["git", "log", "-1", "--oneline"],
         cwd=str(REPO),
