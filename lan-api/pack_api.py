@@ -844,7 +844,7 @@ async function refresh() {
   off.style.display = s.can_shutdown ? '' : 'none';
   off.disabled = s.state === 'running';
   const bits = [];
-  if (s.caller) bits.push('谁: ' + s.caller);
+  if (s.can_shutdown && s.caller) bits.push('谁: ' + s.caller);
   if (s.commit) bits.push('代码: ' + s.commit);
   if (s.started_at) bits.push('开始: ' + s.started_at);
   if (s.finished_at) bits.push('结束: ' + s.finished_at);
@@ -866,11 +866,11 @@ async function refresh() {
     const packed = h.started_at || h.finished_at || '';
     const nas = h.dry ? '未传 NAS（测试）' : (h.nas_path ? '已拷 NAS' : (ok ? '未上 NAS' : ''));
     const chg = (h.changes || []).map(c => '<li>' + esc(c) + '</li>').join('');
-    const who = h.caller ? esc(h.caller) : '来源未记录';
+    const who = (s.can_shutdown && h.caller) ? '<div class="who">谁：' + esc(h.caller) + '</div>' : '';
     return '<li><div class="top"><span class="' + (ok ? 'ok' : 'fail') + '">' + st + '</span>' +
       '<span class="when">打包时间 ' + esc(packed) + '</span>' +
       (h.duration ? '<span class="dur">耗时 ' + esc(h.duration) + '</span>' : '') +
-      '</div><div class="who">谁：' + who + '</div>' +
+      '</div>' + who +
       (h.installer ? '<div>' + esc(h.installer) + (nas ? ' · ' + nas : '') + '</div>' : '') +
       (chg ? '<div class="chg-title">这次改动</div><ul class="chg">' + chg + '</ul>' : (h.commit ? '<div>代码: ' + esc(h.commit) + '</div>' : '')) +
       (h.error ? '<div class="fail">' + esc(h.error) + '</div>' : '') +
@@ -918,8 +918,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path == "/api/status":
+            owner = _is_owner(self)
             st = snapshot()
-            st["can_shutdown"] = _is_owner(self)
+            st["can_shutdown"] = owner
+            if not owner:
+                st["caller"] = None
+                cleaned = []
+                for item in st.get("history") or []:
+                    row = dict(item)
+                    row["caller"] = None
+                    cleaned.append(row)
+                st["history"] = cleaned
             self._json(200, st)
             return
         self.send_error(404)
@@ -955,13 +964,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global _httpd, _history
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    loaded = _load_history()
-    if loaded:
-        _history = loaded
-    else:
-        _history = _backfill_history_from_files()
-        if _history:
-            _save_history()
+    _history = _load_history()
     _httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("pack-api http://0.0.0.0:%s  repo=%s" % (PORT, REPO))
     _httpd.serve_forever()
