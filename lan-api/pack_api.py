@@ -304,15 +304,13 @@ def _ensure_nas():
     password = os.environ.get("PACK_NAS_PASS") or kv.get("PASS") or kv.get("PASSWORD")
     if not user or not password:
         return None
-    for host in ("nas.golgi-bci.com", "192.168.0.89"):
-        share = r"\\%s\软件组共享" % host
-        subprocess.run(
-            ["cmdkey", "/add:" + host, "/user:" + user, "/pass:" + password],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+    users = [user]
+    if "@" not in user:
+        users.append(user + "@golgi-bci.com")
+    hosts = ("nas.golgi-bci.com", "192.168.0.89")
+    share_name = "软件组共享"
+    for host in hosts:
+        share = r"\\%s\%s" % (host, share_name)
         subprocess.run(
             ["net", "use", share, "/delete", "/y"],
             capture_output=True,
@@ -320,13 +318,30 @@ def _ensure_nas():
             encoding="utf-8",
             errors="replace",
         )
-        subprocess.run(
-            ["net", "use", share, "/persistent:yes"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+    connected = False
+    for host in hosts:
+        share = r"\\%s\%s" % (host, share_name)
+        for account in users:
+            subprocess.run(
+                ["cmdkey", "/add:" + host, "/user:" + account, "/pass:" + password],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            # SSH/network logon cannot persist cmdkey; net use with password still works.
+            proc = subprocess.run(
+                ["net", "use", share, password, "/user:" + account, "/persistent:yes"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if proc.returncode == 0 or os.path.isdir(share):
+                connected = True
+                break
+        if connected:
+            break
     for candidate in (NAS_DIR, NAS_DIR_IP):
         if candidate and os.path.isdir(candidate):
             return candidate
