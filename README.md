@@ -33,6 +33,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check_pack_env.ps1 <
 scripts\pack_client.cmd <client_repo>
 ```
 
+## 局域网页面（105 打包机）
+
+浏览器打开 `http://192.168.0.105:8765`，能看到当前步骤和百分比，点「开始打包」。不用填参数。
+
 ## 固定版本
 
 Python 3.8、PySide6 6.6.2、shiboken6 6.6.2、PyInstaller 6.20.0、Inno Setup 6.7.3、ffmpeg（真 exe ≥ 1MB）。
