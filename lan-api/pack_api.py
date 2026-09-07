@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -100,6 +101,29 @@ def set_progress(**kwargs):
 def snapshot():
     with _lock:
         return dict(_state)
+
+
+def _local_ips():
+    found = {"127.0.0.1", "::1"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            ip = info[4][0]
+            if ip:
+                found.add(ip)
+    except Exception:
+        pass
+    return found
+
+
+def _client_ip(handler):
+    ip = handler.client_address[0]
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip
+
+
+def _is_owner(handler):
+    return _client_ip(handler) in _local_ips()
 
 
 STEPS = [
@@ -555,7 +579,9 @@ async function refresh() {
   bar.className = 'bar' + (s.state === 'failed' ? ' fail' : s.state === 'success' ? ' ok' : '');
   document.getElementById('btn').disabled = s.state === 'running';
   document.getElementById('btn').textContent = s.state === 'running' ? '正在打包…' : '开始打包';
-  document.getElementById('off').disabled = s.state === 'running';
+  const off = document.getElementById('off');
+  off.style.display = s.can_shutdown ? '' : 'none';
+  off.disabled = s.state === 'running';
   const bits = [];
   if (s.commit) bits.push('代码: ' + s.commit);
   if (s.started_at) bits.push('开始: ' + s.started_at);
@@ -608,7 +634,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path == "/api/status":
-            self._json(200, snapshot())
+            st = snapshot()
+            st["can_shutdown"] = _is_owner(self)
+            self._json(200, st)
             return
         self.send_error(404)
 
@@ -619,6 +647,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"started": started, "status": st})
             return
         if path == "/api/shutdown":
+            if not _is_owner(self):
+                self._json(403, {"ok": False, "error": "只能在这台打包电脑上关闭服务"})
+                return
             if snapshot().get("state") == "running":
                 self._json(409, {"ok": False, "error": "正在打包，不能关服务"})
                 return
