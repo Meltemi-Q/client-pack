@@ -1,4 +1,3 @@
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$py = Join-Path $env:USERPROFILE 'scoop\apps\python312\current\python.exe'; $api = 'D:\Programs\golgi\geerji_all\client-pack\lan-api\pack_api.py'; $wd = 'D:\Programs\golgi\geerji_all\client-pack\lan-api'; $action = New-ScheduledTaskAction -Execute $py -Argument $api -WorkingDirectory $wd; $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskName GolgiCommunityPackAPI -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null; Start-ScheduledTask -TaskName GolgiCommunityPackAPI; Write-Host Created logon task GolgiCommunityPackAPI"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_autostart.ps1"
 exit /b %ERRORLEVEL%

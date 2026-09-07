@@ -11,7 +11,7 @@ set GOLGI_FFMPEG=%USERPROFILE%\scoop\apps\ffmpeg\current\bin\ffmpeg.exe
 if not exist "%GOLGI_FFMPEG%" set GOLGI_FFMPEG=%USERPROFILE%\scoop\apps\ffmpeg\8.0.1\bin\ffmpeg.exe
 set NO_PROXY=*
 set no_proxy=*
-set PY=%USERPROFILE%\scoop\apps\python312\current\python.exe
-if not exist "%PY%" set PY=python
-start "community-pack-api" /MIN "%PY%" "%~dp0pack_api.py"
+set PY=%USERPROFILE%\scoop\apps\python312\current\pythonw.exe
+if not exist "%PY%" set PY=%USERPROFILE%\scoop\apps\python312\current\python.exe
+start "" "%PY%" "%~dp0pack_api.py"
 exit /b 0

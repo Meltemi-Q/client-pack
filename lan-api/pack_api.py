@@ -153,6 +153,10 @@ def _parse_line(line, current_step):
     return None
 
 
+CREATE_NO_WINDOW = 0x08000000
+_httpd = None
+
+
 def _run(cmd, cwd, env, log_buf, step_hint):
     set_progress(step=step_hint[0], step_label=step_hint[1], percent=step_hint[2], detail=step_hint[1])
     proc = subprocess.Popen(
@@ -165,6 +169,7 @@ def _run(cmd, cwd, env, log_buf, step_hint):
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=CREATE_NO_WINDOW,
     )
     inno_compress = 0
     current = step_hint[0]
@@ -390,7 +395,7 @@ def _upload(setup: Path):
         set_progress(
             nas_path=None,
             percent=97,
-            detail="本机已有安装包；NAS 还没登录（105 上缺少 nas.cred）",
+            detail="本机已有安装包；NAS 还没登录",
         )
         return str(local_dest)
     try:
@@ -483,6 +488,18 @@ def start_pack():
     return True, snapshot()
 
 
+def request_shutdown():
+    httpd = _httpd
+    if httpd is None:
+        return
+
+    def _stop():
+        time.sleep(0.15)
+        httpd.shutdown()
+
+    threading.Thread(target=_stop, daemon=True).start()
+
+
 PAGE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -505,19 +522,23 @@ PAGE = r"""<!DOCTYPE html>
   .meta { font-size: 13px; color: #829ab1; line-height: 1.6; }
   button { margin-top: 20px; font-size: 16px; padding: 10px 22px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
   button:disabled { background: #9fb3c8; cursor: not-allowed; }
+  button.ghost { background: #fff; color: #334e68; border: 1px solid #cbd2d9; margin-left: 8px; }
+  .on { display: inline-block; font-size: 13px; color: #1f9d55; background: #e3f9e5; padding: 4px 10px; border-radius: 99px; margin-bottom: 16px; }
   pre { background: #102a43; color: #d9e2ec; padding: 12px; border-radius: 8px; max-height: 220px; overflow: auto; font-size: 12px; }
 </style>
 </head>
 <body>
 <main>
   <h1>社区筛查客户端打包</h1>
-  <p class="sub">点一下就会拉 develop2 最新代码、打包，并拷到 NAS。不用填参数。</p>
+  <div class="on" id="alive">服务在运行</div>
+  <p class="sub">能打开这个页就说明服务是开着的，没有黑窗口。点「开始打包」会拉 develop2、打包并拷到 NAS。</p>
   <div class="pct" id="pct">0%</div>
   <div class="step" id="step">空闲</div>
   <div class="bar" id="bar"><span id="fill"></span></div>
   <p class="detail" id="detail">还没有开始打包</p>
   <p class="meta" id="meta"></p>
   <button id="btn" type="button">开始打包</button>
+  <button id="off" class="ghost" type="button">关闭服务</button>
   <h3>最近日志</h3>
   <pre id="log"></pre>
 </main>
@@ -534,6 +555,7 @@ async function refresh() {
   bar.className = 'bar' + (s.state === 'failed' ? ' fail' : s.state === 'success' ? ' ok' : '');
   document.getElementById('btn').disabled = s.state === 'running';
   document.getElementById('btn').textContent = s.state === 'running' ? '正在打包…' : '开始打包';
+  document.getElementById('off').disabled = s.state === 'running';
   const bits = [];
   if (s.commit) bits.push('代码: ' + s.commit);
   if (s.started_at) bits.push('开始: ' + s.started_at);
@@ -548,6 +570,13 @@ async function refresh() {
 document.getElementById('btn').onclick = async () => {
   await fetch('/api/pack', {method: 'POST'});
   refresh();
+};
+document.getElementById('off').onclick = async () => {
+  if (!confirm('关闭后这个页面会打不开。再开请双击桌面上的「打开社区打包页」。')) return;
+  await fetch('/api/shutdown', {method: 'POST'});
+  document.getElementById('alive').textContent = '服务已关闭';
+  document.getElementById('alive').style.color = '#627d98';
+  document.getElementById('alive').style.background = '#e4e7eb';
 };
 refresh();
 setInterval(refresh, 1000);
@@ -589,6 +618,13 @@ class Handler(BaseHTTPRequestHandler):
             started, st = start_pack()
             self._json(200, {"started": started, "status": st})
             return
+        if path == "/api/shutdown":
+            if snapshot().get("state") == "running":
+                self._json(409, {"ok": False, "error": "正在打包，不能关服务"})
+                return
+            self._json(200, {"ok": True})
+            request_shutdown()
+            return
         self.send_error(404)
 
     def log_message(self, fmt, *args):
@@ -599,10 +635,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global _httpd
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    _httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("pack-api http://0.0.0.0:%s  repo=%s" % (PORT, REPO))
-    httpd.serve_forever()
+    _httpd.serve_forever()
 
 
 if __name__ == "__main__":

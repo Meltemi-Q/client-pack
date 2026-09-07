@@ -10,13 +10,13 @@
 
 `http://192.168.0.226:8765`
 
+能打开就是服务在跑（后台 `pythonw`，没有黑窗口）。页面上可以开始打包，也可以关服务。关了之后这个地址会打不开，再开请双击桌面上的 `打开社区打包页`。
+
 ## 这台打包机
 
-打包页跑在开发机本机（`192.168.0.226`），用这台电脑已有的 GitHub / NAS 登录。
-
 ```bat
-D:\Programs\golgi\geerji_all\client-pack\lan-api\start_pack_api.cmd
+D:\Programs\golgi\geerji_all\client-pack\lan-api\open_pack_page.cmd
 D:\Programs\golgi\geerji_all\client-pack\lan-api\install_autostart.cmd
 ```
 
-安装包会拷到 NAS；本机备份在 `D:\Programs\golgi\geerji_all\_pack_out`。
+开机后会静默拉起服务。安装包拷到 NAS，本机备份在 `D:\Programs\golgi\geerji_all\_pack_out`。
