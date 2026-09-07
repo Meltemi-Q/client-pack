@@ -112,12 +112,20 @@ def snapshot():
         return st
 
 
+def _enrich_history_item(item):
+    if not item.get("duration"):
+        item["duration"] = _duration_text(item.get("started_at"), item.get("finished_at"))
+    if item.get("changes") is None:
+        item["changes"] = []
+    return item
+
+
 def _load_history():
     if HISTORY_FILE.is_file():
         try:
             data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                return data[:HISTORY_MAX]
+                return [_enrich_history_item(x) for x in data[:HISTORY_MAX]]
         except Exception:
             pass
     return []
