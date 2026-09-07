@@ -68,8 +68,11 @@ CONDA_ROOT = _first_existing(
     r"%USERPROFILE%\Miniconda3",
 )
 LOG_DIR = Path(os.environ.get("PACK_API_LOG", str(_LAN / "logs")))
+HISTORY_FILE = LOG_DIR / "history.json"
+HISTORY_MAX = 20
 
 _lock = threading.Lock()
+_history = []
 _state = {
     "state": "idle",
     "step": "idle",
@@ -101,7 +104,90 @@ def set_progress(**kwargs):
 
 def snapshot():
     with _lock:
-        return dict(_state)
+        st = dict(_state)
+        st["history"] = list(_history)
+        return st
+
+
+def _load_history():
+    if HISTORY_FILE.is_file():
+        try:
+            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data[:HISTORY_MAX]
+        except Exception:
+            pass
+    return []
+
+
+def _save_history():
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        data = list(_history)
+    HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _add_history(entry):
+    with _lock:
+        _history.insert(0, entry)
+        del _history[HISTORY_MAX:]
+    _save_history()
+
+
+def _history_from_state():
+    st = snapshot()
+    return {
+        "state": st.get("state"),
+        "started_at": st.get("started_at"),
+        "finished_at": st.get("finished_at"),
+        "installer": st.get("installer"),
+        "local_path": st.get("local_path"),
+        "nas_path": st.get("nas_path"),
+        "commit": st.get("commit"),
+        "detail": st.get("detail"),
+        "error": st.get("error"),
+        "dry": bool(st.get("dry")),
+    }
+
+
+def _backfill_history_from_files():
+    seen = set()
+    items = []
+    for folder in (LOCAL_OUT, REPO / "dist" / "installer"):
+        if not folder.is_dir():
+            continue
+        for path in folder.glob("*_setup_*.exe"):
+            if path.name in seen:
+                continue
+            seen.add(path.name)
+            stamp = None
+            m = re.search(r"_(\d{8})_(\d{6})\.exe$", path.name)
+            if m:
+                stamp = "%s-%s-%s %s:%s:%s" % (
+                    m.group(1)[0:4],
+                    m.group(1)[4:6],
+                    m.group(1)[6:8],
+                    m.group(2)[0:2],
+                    m.group(2)[2:4],
+                    m.group(2)[4:6],
+                )
+            finished = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+            items.append(
+                {
+                    "state": "success",
+                    "started_at": stamp,
+                    "finished_at": finished,
+                    "installer": path.name,
+                    "local_path": str(path),
+                    "nas_path": None,
+                    "commit": None,
+                    "detail": "本机安装包（服务启动时扫到的）",
+                    "error": None,
+                    "dry": None,
+                }
+            )
+    items.sort(key=lambda x: x.get("started_at") or x.get("finished_at") or "", reverse=True)
+    return items[:HISTORY_MAX]
 
 
 def _local_ips():
@@ -554,6 +640,7 @@ def worker(dry=False):
             installer=setup.name,
             nas_path=nas if not dry else None,
         )
+        _add_history(_history_from_state())
     except Exception as e:
         set_progress(
             state="failed",
@@ -562,6 +649,7 @@ def worker(dry=False):
             error=str(e),
             finished_at=_now(),
         )
+        _add_history(_history_from_state())
 
 
 def start_pack(dry=False):
@@ -611,6 +699,10 @@ PAGE = r"""<!DOCTYPE html>
   button.ghost { background: #fff; color: #334e68; border: 1px solid #cbd2d9; margin-left: 8px; }
   .on { display: inline-block; font-size: 13px; color: #1f9d55; background: #e3f9e5; padding: 4px 10px; border-radius: 99px; margin-bottom: 16px; }
   pre { background: #102a43; color: #d9e2ec; padding: 12px; border-radius: 8px; max-height: 220px; overflow: auto; font-size: 12px; }
+  .hist { list-style: none; padding: 0; margin: 0 0 20px; }
+  .hist li { font-size: 13px; color: #334e68; padding: 10px 0; border-bottom: 1px solid #e4e7eb; line-height: 1.5; }
+  .hist .ok { color: #1f9d55; font-weight: 600; }
+  .hist .fail { color: #c0392b; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -625,7 +717,9 @@ PAGE = r"""<!DOCTYPE html>
   <p class="meta" id="meta"></p>
   <button id="btn" type="button">开始打包</button>
   <button id="off" class="ghost" type="button">关闭服务</button>
-  <h3>最近日志</h3>
+  <h3>最近几次打包</h3>
+  <ul class="hist" id="hist"></ul>
+  <h3>本次日志</h3>
   <pre id="log"></pre>
 </main>
 <script>
@@ -654,6 +748,19 @@ async function refresh() {
   if (s.error) bits.push('错误: ' + s.error);
   document.getElementById('meta').textContent = bits.join('  ·  ');
   document.getElementById('log').textContent = s.log_tail || '';
+  const hist = document.getElementById('hist');
+  const rows = s.history || [];
+  hist.innerHTML = rows.length ? rows.map(h => {
+    const ok = h.state === 'success';
+    const st = ok ? '成功' : '失败';
+    const nas = h.dry ? '未传 NAS（测试）' : (h.nas_path ? '已拷 NAS' : (ok ? '未上 NAS' : ''));
+    const when = h.started_at || h.finished_at || '';
+    const end = h.finished_at && h.started_at ? ' → ' + h.finished_at : '';
+    const name = h.installer || h.detail || '';
+    const commit = h.commit ? '<br>代码: ' + h.commit : '';
+    const err = h.error ? '<br>' + h.error : '';
+    return '<li><span class="' + (ok ? 'ok' : 'fail') + '">' + st + '</span> ' + when + end + '<br>' + name + (nas ? ' · ' + nas : '') + commit + err + '</li>';
+  }).join('') : '<li>还没有记录</li>';
 }
 document.getElementById('btn').onclick = async () => {
   await fetch('/api/pack', {method: 'POST'});
@@ -731,8 +838,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global _httpd
+    global _httpd, _history
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    loaded = _load_history()
+    if loaded:
+        _history = loaded
+    else:
+        _history = _backfill_history_from_files()
+        if _history:
+            _save_history()
     _httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("pack-api http://0.0.0.0:%s  repo=%s" % (PORT, REPO))
     _httpd.serve_forever()
