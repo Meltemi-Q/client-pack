@@ -822,7 +822,7 @@ PAGE = r"""<!DOCTYPE html>
   <p class="meta" id="meta"></p>
   <button id="btn" type="button">开始打包</button>
   <button id="off" class="ghost" type="button">关闭服务</button>
-  <h3>最近几次打包</h3>
+  <h3>最近的打包</h3>
   <ul class="hist" id="hist"></ul>
   <h3>本次日志</h3>
   <pre id="log"></pre>
