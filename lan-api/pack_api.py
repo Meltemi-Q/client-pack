@@ -88,6 +88,9 @@ _state = {
     "error": None,
     "log_tail": "",
     "dry": False,
+    "caller": None,
+    "changes": [],
+    "duration": None,
 }
 
 
@@ -134,16 +137,94 @@ def _add_history(entry):
     _save_history()
 
 
+def _parse_time(text):
+    if not text:
+        return None
+    try:
+        return time.mktime(time.strptime(text, "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return None
+
+
+def _duration_text(start, end):
+    t0 = _parse_time(start)
+    t1 = _parse_time(end)
+    if t0 is None or t1 is None:
+        return None
+    sec = int(t1 - t0)
+    if sec < 0:
+        return None
+    if sec < 60:
+        return "%s秒" % sec
+    minutes, seconds = divmod(sec, 60)
+    if minutes < 60:
+        return "%s分%s秒" % (minutes, seconds)
+    hours, minutes = divmod(minutes, 60)
+    return "%s小时%s分" % (hours, minutes)
+
+
+def _commit_hash(text):
+    if not text:
+        return ""
+    return text.strip().split()[0]
+
+
+def _git_changes(curr_commit):
+    curr = _commit_hash(curr_commit)
+    if not curr or not (REPO / ".git").exists():
+        return []
+    prev = ""
+    with _lock:
+        for item in _history:
+            prev = _commit_hash(item.get("commit"))
+            if prev:
+                break
+    cmd = ["git", "log", "--oneline", "-12"]
+    if prev and prev != curr:
+        cmd = ["git", "log", "--oneline", "-12", "%s..%s" % (prev, curr)]
+    else:
+        cmd = ["git", "log", "--oneline", "-8", curr]
+    proc = subprocess.run(
+        cmd,
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    lines = [x.strip() for x in (proc.stdout or "").splitlines() if x.strip()]
+    return lines[:12]
+
+
+def _caller_label(handler):
+    ip = _client_ip(handler)
+    if ip in _local_ips():
+        return "本机 %s" % ip
+    host = ""
+    try:
+        host = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        host = ""
+    if host and host != ip:
+        return "%s（%s）" % (host, ip)
+    return ip
+
+
 def _history_from_state():
     st = snapshot()
+    changes = st.get("changes") or _git_changes(st.get("commit"))
     return {
         "state": st.get("state"),
         "started_at": st.get("started_at"),
         "finished_at": st.get("finished_at"),
+        "duration": st.get("duration") or _duration_text(st.get("started_at"), st.get("finished_at")),
         "installer": st.get("installer"),
         "local_path": st.get("local_path"),
         "nas_path": st.get("nas_path"),
         "commit": st.get("commit"),
+        "changes": changes,
+        "caller": st.get("caller"),
         "detail": st.get("detail"),
         "error": st.get("error"),
         "dry": bool(st.get("dry")),
@@ -177,10 +258,13 @@ def _backfill_history_from_files():
                     "state": "success",
                     "started_at": stamp,
                     "finished_at": finished,
+                    "duration": _duration_text(stamp, finished),
                     "installer": path.name,
                     "local_path": str(path),
                     "nas_path": None,
                     "commit": None,
+                    "changes": [],
+                    "caller": None,
                     "detail": "本机安装包（服务启动时扫到的）",
                     "error": None,
                     "dry": None,
@@ -592,7 +676,7 @@ def _upload(setup: Path, dry=False, log_buf=None):
     return nas_dest or str(local_dest)
 
 
-def worker(dry=False):
+def worker(dry=False, caller=None):
     log_buf = []
     env = _pack_env()
     try:
@@ -610,8 +694,12 @@ def worker(dry=False):
             error=None,
             log_tail="",
             dry=dry,
+            caller=caller,
+            changes=[],
+            duration=None,
         )
         _git_pull(env, log_buf)
+        set_progress(changes=_git_changes(snapshot().get("commit")))
         if not _ensure_spec():
             raise RuntimeError("缺少 Golgi_fNIRS_community.spec")
         bat = REPO / "build_and_pack.bat"
@@ -630,34 +718,38 @@ def worker(dry=False):
         if setup is None:
             raise RuntimeError("没有生成 dist\\installer\\*_setup_*.exe")
         nas = _upload(setup, dry=dry, log_buf=log_buf)
+        finished = _now()
         set_progress(
             state="success",
             step="done",
             step_label="完成",
             percent=100,
             detail="dry-run 完成，未传 NAS" if dry else "安装包已放到 NAS",
-            finished_at=_now(),
+            finished_at=finished,
+            duration=_duration_text(snapshot().get("started_at"), finished),
             installer=setup.name,
             nas_path=nas if not dry else None,
         )
         _add_history(_history_from_state())
     except Exception as e:
+        finished = _now()
         set_progress(
             state="failed",
             step_label="失败",
             detail=str(e),
             error=str(e),
-            finished_at=_now(),
+            finished_at=finished,
+            duration=_duration_text(snapshot().get("started_at"), finished),
         )
         _add_history(_history_from_state())
 
 
-def start_pack(dry=False):
+def start_pack(dry=False, caller=None):
     with _lock:
         if _state["state"] == "running":
             return False, snapshot()
         _state["state"] = "running"
-    t = threading.Thread(target=worker, kwargs={"dry": dry}, daemon=True)
+    t = threading.Thread(target=worker, kwargs={"dry": dry, "caller": caller}, daemon=True)
     t.start()
     return True, snapshot()
 
@@ -699,10 +791,15 @@ PAGE = r"""<!DOCTYPE html>
   button.ghost { background: #fff; color: #334e68; border: 1px solid #cbd2d9; margin-left: 8px; }
   .on { display: inline-block; font-size: 13px; color: #1f9d55; background: #e3f9e5; padding: 4px 10px; border-radius: 99px; margin-bottom: 16px; }
   pre { background: #102a43; color: #d9e2ec; padding: 12px; border-radius: 8px; max-height: 220px; overflow: auto; font-size: 12px; }
-  .hist { list-style: none; padding: 0; margin: 0 0 20px; }
-  .hist li { font-size: 13px; color: #334e68; padding: 10px 0; border-bottom: 1px solid #e4e7eb; line-height: 1.5; }
+  .hist { list-style: none; padding: 0; margin: 0 0 20px; display: flex; flex-direction: column; gap: 10px; }
+  .hist li { font-size: 13px; color: #334e68; line-height: 1.5; background: #f8fafc; border: 1px solid #e4e7eb; border-radius: 10px; padding: 12px 14px; }
   .hist .ok { color: #1f9d55; font-weight: 600; }
   .hist .fail { color: #c0392b; font-weight: 600; }
+  .hist .top { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; margin-bottom: 6px; }
+  .hist .when { color: #102a43; font-weight: 600; }
+  .hist .dur, .hist .who { color: #627d98; }
+  .hist .chg { margin: 6px 0 0; padding-left: 18px; color: #334e68; }
+  .hist .chg-title { margin-top: 8px; color: #627d98; }
 </style>
 </head>
 <body>
@@ -739,9 +836,11 @@ async function refresh() {
   off.style.display = s.can_shutdown ? '' : 'none';
   off.disabled = s.state === 'running';
   const bits = [];
+  if (s.caller) bits.push('谁: ' + s.caller);
   if (s.commit) bits.push('代码: ' + s.commit);
   if (s.started_at) bits.push('开始: ' + s.started_at);
   if (s.finished_at) bits.push('结束: ' + s.finished_at);
+  if (s.duration) bits.push('耗时: ' + s.duration);
   if (s.installer) bits.push('安装包: ' + s.installer);
   if (s.local_path) bits.push('本机: ' + s.local_path);
   if (s.nas_path) bits.push('NAS: ' + s.nas_path);
@@ -750,16 +849,24 @@ async function refresh() {
   document.getElementById('log').textContent = s.log_tail || '';
   const hist = document.getElementById('hist');
   const rows = s.history || [];
+  function esc(t) {
+    return String(t || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
   hist.innerHTML = rows.length ? rows.map(h => {
     const ok = h.state === 'success';
     const st = ok ? '成功' : '失败';
+    const packed = h.started_at || h.finished_at || '';
     const nas = h.dry ? '未传 NAS（测试）' : (h.nas_path ? '已拷 NAS' : (ok ? '未上 NAS' : ''));
-    const when = h.started_at || h.finished_at || '';
-    const end = h.finished_at && h.started_at ? ' → ' + h.finished_at : '';
-    const name = h.installer || h.detail || '';
-    const commit = h.commit ? '<br>代码: ' + h.commit : '';
-    const err = h.error ? '<br>' + h.error : '';
-    return '<li><span class="' + (ok ? 'ok' : 'fail') + '">' + st + '</span> ' + when + end + '<br>' + name + (nas ? ' · ' + nas : '') + commit + err + '</li>';
+    const chg = (h.changes || []).map(c => '<li>' + esc(c) + '</li>').join('');
+    const who = h.caller ? esc(h.caller) : '来源未记录';
+    return '<li><div class="top"><span class="' + (ok ? 'ok' : 'fail') + '">' + st + '</span>' +
+      '<span class="when">打包时间 ' + esc(packed) + '</span>' +
+      (h.duration ? '<span class="dur">耗时 ' + esc(h.duration) + '</span>' : '') +
+      '</div><div class="who">谁：' + who + '</div>' +
+      (h.installer ? '<div>' + esc(h.installer) + (nas ? ' · ' + nas : '') + '</div>' : '') +
+      (chg ? '<div class="chg-title">这次改动</div><ul class="chg">' + chg + '</ul>' : (h.commit ? '<div>代码: ' + esc(h.commit) + '</div>' : '')) +
+      (h.error ? '<div class="fail">' + esc(h.error) + '</div>' : '') +
+      '</li>';
   }).join('') : '<li>还没有记录</li>';
 }
 document.getElementById('btn').onclick = async () => {
@@ -815,7 +922,7 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             dry_raw = (q.get("dry") or q.get("dry_run") or [""])[0].lower()
             dry = dry_raw in ("1", "true", "yes")
-            started, st = start_pack(dry=dry)
+            started, st = start_pack(dry=dry, caller=_caller_label(self))
             self._json(200, {"started": started, "status": st})
             return
         if path == "/api/shutdown":
