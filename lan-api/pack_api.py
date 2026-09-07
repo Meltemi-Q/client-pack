@@ -144,37 +144,53 @@ def _append_log(buf, line):
     return "\n".join(buf)
 
 
+def _note(log_buf, line, **progress):
+    tail = _append_log(log_buf, line)
+    progress["log_tail"] = tail
+    if "detail" not in progress:
+        progress["detail"] = line[:180]
+    set_progress(**progress)
+
+
 def _parse_line(line, current_step):
-    """Return (step, percent, detail) or None to keep previous."""
+    """Return (step, percent, detail, kind) or None to keep previous.
+
+    kind is a counter bucket so long phases can creep forward instead of sitting
+    on one number. percent is a floor for that event; None means use the counter.
+    """
     s = line.strip()
     if not s:
         return None
     if "Fetching" in s or s.startswith("Updating ") or "Fast-forward" in s:
-        return ("pull", 6, s[:180])
+        return ("pull", 6, s[:180], None)
     if "[spec]" in s:
-        return ("spec", 12, s[:180])
+        return ("spec", 12, s[:180], None)
     if s.startswith("[1/2]") or "Building with PyInstaller" in s:
-        return ("pyinstaller", 18, "开始 PyInstaller")
+        return ("pyinstaller", 16, "开始 PyInstaller", None)
     if "Analyzing " in s and ".py" in s:
-        return ("pyinstaller", 28, s[:180])
+        return ("pyinstaller", None, s[:180], "analyze")
     if "Processing standard module hook" in s:
-        return ("pyinstaller", 40, s[-120:])
+        return ("pyinstaller", None, s[-120:], "hook")
     if "Building PYZ" in s:
-        return ("pyinstaller", 50, "正在压缩 Python 模块")
+        return ("pyinstaller", 52, "正在压缩 Python 模块", None)
+    if "Building PKG" in s:
+        return ("pyinstaller", 56, "正在打包引导程序", None)
     if "Building EXE" in s:
-        return ("pyinstaller", 58, "正在生成 exe")
+        return ("pyinstaller", 60, "正在生成 exe", None)
     if "Building COLLECT" in s:
-        return ("pyinstaller", 64, "正在收集依赖和资源")
-    if "Build complete" in s or s.startswith("[2/2]"):
-        return ("inno", 72, "PyInstaller 完成，开始 Inno")
+        return ("pyinstaller", 66, "正在收集依赖和资源", None)
+    if s.startswith("[2/2]"):
+        return ("inno", 72, "PyInstaller 完成，开始 Inno", None)
     if s.startswith("Parsing [") or "Compiler engine version" in s:
-        return ("inno", 74, s[:180])
+        return ("inno", 74, s[:180], None)
     if s.startswith("Compressing:") or s.startswith("   Compressing:"):
-        return ("inno", None, "正在压缩安装包文件")
-    if "Successful compile" in s or "Build completed successfully" in s:
-        return ("inno", 92, s[:180])
+        return ("inno", None, "正在压缩安装包文件", "inno_compress")
+    if "Successful compile" in s:
+        return ("inno", 92, s[:180], None)
+    if "Build completed successfully" in s:
+        return ("inno", 93, s[:180], None)
     if s.startswith("[ERROR]") or "RESULT=FAIL" in s:
-        return (current_step, None, s[:180])
+        return (current_step, None, s[:180], None)
     return None
 
 
@@ -196,24 +212,34 @@ def _run(cmd, cwd, env, log_buf, step_hint):
         errors="replace",
         creationflags=CREATE_NO_WINDOW,
     )
-    inno_compress = 0
+    n_analyze = 0
+    n_hook = 0
+    n_inno = 0
+    pct_now = step_hint[2]
     current = step_hint[0]
     for raw in proc.stdout:
         line = raw.rstrip("\n")
         tail = _append_log(log_buf, line)
         parsed = _parse_line(line, current)
-        extra = {}
+        extra = {"log_tail": tail}
         if parsed:
-            current, pct, detail = parsed
+            current, pct, detail, kind = parsed
             extra["step"] = current
             extra["step_label"] = next((x[1] for x in STEPS if x[0] == current), detail)
             extra["detail"] = detail
-            if current == "inno" and "压缩安装包" in (detail or ""):
-                inno_compress += 1
-                extra["percent"] = min(90, 74 + inno_compress // 40)
-            elif pct is not None:
-                extra["percent"] = pct
-        extra["log_tail"] = tail
+            if kind == "analyze":
+                n_analyze += 1
+                pct = min(32, 16 + n_analyze // 5)
+            elif kind == "hook":
+                n_hook += 1
+                pct = min(50, 32 + n_hook // 5)
+            elif kind == "inno_compress":
+                n_inno += 1
+                extra["detail"] = "正在压缩安装包文件 (%s)" % n_inno
+                pct = min(91, 74 + n_inno * 17 // 1800)
+            if pct is not None and pct > pct_now:
+                pct_now = pct
+                extra["percent"] = pct_now
         set_progress(**extra)
     rc = proc.wait()
     return rc
@@ -408,27 +434,52 @@ def _ensure_nas():
     return None
 
 
-def _upload(setup: Path, dry=False):
-    set_progress(step="upload", step_label="正在拷到输出目录", percent=94, detail="复制 " + setup.name)
+def _upload(setup: Path, dry=False, log_buf=None):
+    if log_buf is None:
+        log_buf = []
+    _note(
+        log_buf,
+        "[upload] 复制到本机 " + setup.name,
+        step="upload",
+        step_label="正在拷到输出目录",
+        percent=94,
+        installer=setup.name,
+    )
     LOCAL_OUT.mkdir(parents=True, exist_ok=True)
     local_dest = LOCAL_OUT / setup.name
     shutil.copy2(str(setup), str(local_dest))
-    set_progress(local_path=str(local_dest), installer=setup.name, percent=96, detail="已拷到本机 " + str(local_dest))
+    _note(
+        log_buf,
+        "[upload] 已拷到本机 " + str(local_dest),
+        local_path=str(local_dest),
+        percent=96,
+    )
     if dry:
-        set_progress(nas_path=None, percent=98, detail="dry-run：安装包已生成，跳过 NAS")
+        _note(
+            log_buf,
+            "[upload] dry-run，跳过 NAS",
+            nas_path=None,
+            percent=98,
+        )
         return str(local_dest)
     nas_root = _ensure_nas()
     nas_dest = None
     if not nas_root:
-        set_progress(
+        _note(
+            log_buf,
+            "[upload] NAS 还没登录，安装包只留在本机",
             nas_path=None,
             percent=97,
-            detail="本机已有安装包；NAS 还没登录",
         )
         return str(local_dest)
     try:
         os.makedirs(nas_root, exist_ok=True)
         nas_dest = os.path.join(nas_root, setup.name)
+        _note(
+            log_buf,
+            "[upload] 正在拷到 NAS " + nas_dest,
+            percent=97,
+        )
         shutil.copy2(str(setup), nas_dest)
         marker = os.path.join(
             nas_root,
@@ -439,12 +490,18 @@ def _upload(setup: Path, dry=False):
             "branch: %s\ncommit: %s\ninstaller: %s\nsource: pack-api\n" % (BRANCH, commit, setup.name),
             encoding="utf-8",
         )
-        set_progress(nas_path=nas_dest, percent=98, detail="已拷到 NAS")
+        _note(
+            log_buf,
+            "[upload] 已拷到 NAS " + nas_dest,
+            nas_path=nas_dest,
+            percent=99,
+        )
     except Exception as e:
-        set_progress(
+        _note(
+            log_buf,
+            "[upload] NAS 拷贝失败：" + str(e)[:160],
             nas_path=None,
             percent=97,
-            detail="本机已有安装包；NAS 拷贝失败：" + str(e)[:160],
         )
     return nas_dest or str(local_dest)
 
@@ -486,7 +543,7 @@ def worker(dry=False):
         setup = _newest_installer()
         if setup is None:
             raise RuntimeError("没有生成 dist\\installer\\*_setup_*.exe")
-        nas = _upload(setup, dry=dry)
+        nas = _upload(setup, dry=dry, log_buf=log_buf)
         set_progress(
             state="success",
             step="done",
