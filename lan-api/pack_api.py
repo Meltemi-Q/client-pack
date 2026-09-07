@@ -18,7 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 _LAN = Path(__file__).resolve().parent
 _CLIENT_PACK_DEFAULT = _LAN.parent
@@ -84,6 +84,7 @@ _state = {
     "commit": None,
     "error": None,
     "log_tail": "",
+    "dry": False,
 }
 
 
@@ -407,12 +408,15 @@ def _ensure_nas():
     return None
 
 
-def _upload(setup: Path):
+def _upload(setup: Path, dry=False):
     set_progress(step="upload", step_label="正在拷到输出目录", percent=94, detail="复制 " + setup.name)
     LOCAL_OUT.mkdir(parents=True, exist_ok=True)
     local_dest = LOCAL_OUT / setup.name
     shutil.copy2(str(setup), str(local_dest))
     set_progress(local_path=str(local_dest), installer=setup.name, percent=96, detail="已拷到本机 " + str(local_dest))
+    if dry:
+        set_progress(nas_path=None, percent=98, detail="dry-run：安装包已生成，跳过 NAS")
+        return str(local_dest)
     nas_root = _ensure_nas()
     nas_dest = None
     if not nas_root:
@@ -445,7 +449,7 @@ def _upload(setup: Path):
     return nas_dest or str(local_dest)
 
 
-def worker():
+def worker(dry=False):
     log_buf = []
     env = _pack_env()
     try:
@@ -454,7 +458,7 @@ def worker():
             step="pull",
             step_label="正在拉最新代码",
             percent=2,
-            detail="开始",
+            detail="dry-run 开始" if dry else "开始",
             started_at=_now(),
             finished_at=None,
             installer=None,
@@ -462,6 +466,7 @@ def worker():
             local_path=None,
             error=None,
             log_tail="",
+            dry=dry,
         )
         _git_pull(env, log_buf)
         if not _ensure_spec():
@@ -481,16 +486,16 @@ def worker():
         setup = _newest_installer()
         if setup is None:
             raise RuntimeError("没有生成 dist\\installer\\*_setup_*.exe")
-        nas = _upload(setup)
+        nas = _upload(setup, dry=dry)
         set_progress(
             state="success",
             step="done",
             step_label="完成",
             percent=100,
-            detail="安装包已放到 NAS",
+            detail="dry-run 完成，未传 NAS" if dry else "安装包已放到 NAS",
             finished_at=_now(),
             installer=setup.name,
-            nas_path=nas,
+            nas_path=nas if not dry else None,
         )
     except Exception as e:
         set_progress(
@@ -502,12 +507,12 @@ def worker():
         )
 
 
-def start_pack():
+def start_pack(dry=False):
     with _lock:
         if _state["state"] == "running":
             return False, snapshot()
         _state["state"] = "running"
-    t = threading.Thread(target=worker, daemon=True)
+    t = threading.Thread(target=worker, kwargs={"dry": dry}, daemon=True)
     t.start()
     return True, snapshot()
 
@@ -605,7 +610,7 @@ document.getElementById('off').onclick = async () => {
   document.getElementById('alive').style.background = '#e4e7eb';
 };
 refresh();
-setInterval(refresh, 1000);
+setInterval(refresh, 3000);
 </script>
 </body>
 </html>
@@ -643,7 +648,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/pack":
-            started, st = start_pack()
+            q = parse_qs(urlparse(self.path).query)
+            dry_raw = (q.get("dry") or q.get("dry_run") or [""])[0].lower()
+            dry = dry_raw in ("1", "true", "yes")
+            started, st = start_pack(dry=dry)
             self._json(200, {"started": started, "status": st})
             return
         if path == "/api/shutdown":
