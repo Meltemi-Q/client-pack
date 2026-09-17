@@ -71,7 +71,7 @@ LOG_DIR = Path(os.environ.get("PACK_API_LOG", str(_LAN / "logs")))
 HISTORY_FILE = LOG_DIR / "history.json"
 HISTORY_MAX = 20
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _history = []
 _state = {
     "state": "idle",
@@ -339,8 +339,20 @@ def _parse_line(line, current_step):
     s = line.strip()
     if not s:
         return None
+    m = re.search(r"Receiving objects:\s+(\d+)%", s)
+    if m:
+        n = int(m.group(1))
+        return ("pull", 5 + n * 4 // 100, "正在接收代码 %s%%" % n, "git_progress")
+    m = re.search(r"Resolving deltas:\s+(\d+)%", s)
+    if m:
+        n = int(m.group(1))
+        return ("pull", min(9, 8 + n // 50), "正在整理增量 %s%%" % n, "git_progress")
+    if "remote: Counting objects" in s or "remote: Compressing objects" in s:
+        return ("pull", 5, "GitHub 正在准备对象", "git_progress")
+    if s.startswith("From ") or "* branch" in s or "FETCH_HEAD" in s:
+        return ("pull", 9, s[:180], None)
     if "Fetching" in s or s.startswith("Updating ") or "Fast-forward" in s:
-        return ("pull", 6, s[:180], None)
+        return ("pull", 8, s[:180], None)
     if "[spec]" in s:
         return ("spec", 12, s[:180], None)
     if s.startswith("[1/2]") or "Building with PyInstaller" in s:
@@ -376,6 +388,34 @@ CREATE_NO_WINDOW = 0x08000000
 _httpd = None
 
 
+def _iter_output_lines(stream):
+    """Yield decoded lines; git/PyInstaller progress uses \\r instead of \\n."""
+    buf = b""
+    while True:
+        chunk = stream.read(128)
+        if not chunk:
+            if buf.strip():
+                yield buf.decode("utf-8", "replace")
+            break
+        buf += chunk
+        while True:
+            idx_n = buf.find(b"\n")
+            idx_r = buf.find(b"\r")
+            if idx_n < 0 and idx_r < 0:
+                break
+            if idx_n < 0:
+                i = idx_r
+            elif idx_r < 0:
+                i = idx_n
+            else:
+                i = min(idx_n, idx_r)
+            yield buf[:i].decode("utf-8", "replace")
+            if buf[i : i + 2] == b"\r\n":
+                buf = buf[i + 2 :]
+            else:
+                buf = buf[i + 1 :]
+
+
 def _run(cmd, cwd, env, log_buf, step_hint):
     set_progress(step=step_hint[0], step_label=step_hint[1], percent=step_hint[2], detail=step_hint[1])
     proc = subprocess.Popen(
@@ -385,40 +425,65 @@ def _run(cmd, cwd, env, log_buf, step_hint):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        bufsize=0,
         creationflags=CREATE_NO_WINDOW,
     )
     n_analyze = 0
     n_hook = 0
     n_inno = 0
     pct_now = step_hint[2]
-    current = step_hint[0]
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        tail = _append_log(log_buf, line)
-        parsed = _parse_line(line, current)
-        extra = {"log_tail": tail}
-        if parsed:
-            current, pct, detail, kind = parsed
-            extra["step"] = current
-            extra["step_label"] = next((x[1] for x in STEPS if x[0] == current), detail)
-            extra["detail"] = detail
-            if kind == "analyze":
-                n_analyze += 1
-                pct = min(32, 16 + n_analyze // 5)
-            elif kind == "hook":
-                n_hook += 1
-                pct = min(50, 32 + n_hook // 5)
-            elif kind == "inno_compress":
-                n_inno += 1
-                extra["detail"] = "正在压缩安装包文件 (%s)" % n_inno
-                pct = min(91, 74 + n_inno * 17 // 1800)
-            if pct is not None and pct > pct_now:
-                pct_now = pct
-                extra["percent"] = pct_now
-        set_progress(**extra)
+    current = [step_hint[0]]
+    last_out = [time.time()]
+    started = time.time()
+    stop_hb = threading.Event()
+
+    def heartbeat():
+        while not stop_hb.wait(2.0):
+            if snapshot().get("step") != "pull":
+                continue
+            if time.time() - last_out[0] < 1.8:
+                continue
+            waited = int(time.time() - started)
+            set_progress(
+                step="pull",
+                step_label="正在拉最新代码",
+                detail="正在连接 GitHub，已等待 %s 秒" % waited,
+            )
+
+    hb = threading.Thread(target=heartbeat, daemon=True)
+    if step_hint[0] == "pull":
+        hb.start()
+    try:
+        for line in _iter_output_lines(proc.stdout):
+            line = line.rstrip("\n")
+            last_out[0] = time.time()
+            parsed = _parse_line(line, current[0])
+            kind = parsed[3] if parsed else None
+            extra = {}
+            if kind != "git_progress":
+                extra["log_tail"] = _append_log(log_buf, line)
+            if parsed:
+                current[0], pct, detail, kind = parsed
+                extra["step"] = current[0]
+                extra["step_label"] = next((x[1] for x in STEPS if x[0] == current[0]), detail)
+                extra["detail"] = detail
+                if kind == "analyze":
+                    n_analyze += 1
+                    pct = min(32, 16 + n_analyze // 5)
+                elif kind == "hook":
+                    n_hook += 1
+                    pct = min(50, 32 + n_hook // 5)
+                elif kind == "inno_compress":
+                    n_inno += 1
+                    extra["detail"] = "正在压缩安装包文件 (%s)" % n_inno
+                    pct = min(91, 74 + n_inno * 17 // 1800)
+                if pct is not None and pct > pct_now:
+                    pct_now = pct
+                    extra["percent"] = pct_now
+            if extra:
+                set_progress(**extra)
+    finally:
+        stop_hb.set()
     rc = proc.wait()
     return rc
 
@@ -427,8 +492,11 @@ def _pack_env():
     env = os.environ.copy()
     env["GOLGI_NOPAUSE"] = "1"
     env["GOLGI_FFMPEG"] = FFMPEG
-    env["NO_PROXY"] = "*"
-    env["no_proxy"] = "*"
+    lan_bypass = "localhost,127.0.0.1,::1,192.168.*,*.golgi-bci.com"
+    curr_no_proxy = env.get("NO_PROXY") or env.get("no_proxy")
+    if not curr_no_proxy or curr_no_proxy == "*":
+        env["NO_PROXY"] = lan_bypass
+        env["no_proxy"] = lan_bypass
     env["GIT_TERMINAL_PROMPT"] = "0"
     condabin = str(CONDA_ROOT / "condabin")
     scripts = str(CONDA_ROOT / "Scripts")
@@ -483,17 +551,27 @@ def _git_pull(env, log_buf):
             text=True,
         )
     extra_env = _git_ssh_env(env)
-    rc = _run(["git", "fetch", "origin", BRANCH], REPO, extra_env, log_buf, ("pull", "正在拉最新代码", 6))
+    extra_env["GIT_FLUSH"] = "1"
+    _note(log_buf, "[pull] 开始连接 GitHub 拉 " + BRANCH, step="pull", step_label="正在拉最新代码", percent=4)
+    rc = _run(
+        ["git", "fetch", "--progress", "origin", BRANCH],
+        REPO,
+        extra_env,
+        log_buf,
+        ("pull", "正在拉最新代码", 5),
+    )
     if rc != 0 and GIT_TOKEN.is_file():
         set_progress(detail="SSH 部署密钥还没在 GitHub 生效，改用公司仓库只读 token", percent=6)
         rc = _run(
-            ["git", "fetch", GIT_HTTPS_URL, BRANCH + ":refs/remotes/origin/" + BRANCH],
+            ["git", "fetch", "--progress", GIT_HTTPS_URL, BRANCH + ":refs/remotes/origin/" + BRANCH],
             REPO,
             extra_env,
             log_buf,
             ("pull", "正在拉最新代码", 7),
         )
-    if rc != 0:
+    if rc == 0:
+        _note(log_buf, "[pull] GitHub fetch 完成", percent=9)
+    else:
         set_progress(
             detail="GitHub 直连失败，尝试使用本机已同步过来的 origin/" + BRANCH,
             percent=7,
@@ -523,7 +601,13 @@ def _git_pull(env, log_buf):
         encoding="utf-8",
         errors="replace",
     )
-    set_progress(commit=(head.stdout or "").strip(), percent=10, detail="代码已更新")
+    _note(
+        log_buf,
+        "[pull] 当前代码 " + (head.stdout or "").strip(),
+        commit=(head.stdout or "").strip(),
+        percent=10,
+        detail="代码已更新",
+    )
     return True
 
 
@@ -755,8 +839,12 @@ def worker(dry=False, caller=None):
 def start_pack(dry=False, caller=None):
     with _lock:
         if _state["state"] == "running":
-            return False, snapshot()
-        _state["state"] = "running"
+            already_running = True
+        else:
+            already_running = False
+            _state["state"] = "running"
+    if already_running:
+        return False, snapshot()
     t = threading.Thread(target=worker, kwargs={"dry": dry, "caller": caller}, daemon=True)
     t.start()
     return True, snapshot()
@@ -897,6 +985,8 @@ setInterval(refresh, 3000);
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30
+
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
